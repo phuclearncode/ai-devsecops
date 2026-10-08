@@ -1,0 +1,57 @@
+# Self-hosted GitHub Actions runner on the local cluster.
+# Needs the secret first:
+#   kubectl create namespace gh-runner
+#   kubectl -n gh-runner create secret generic github-pat --from-literal=token="<PAT>"
+# Then: kubectl apply -f runner.yaml
+#
+# Runners are ephemeral: each one takes a single job, exits, and the container
+# restarts and re-registers, so every job starts on a clean filesystem.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gh-runner
+  namespace: gh-runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gh-runner
+  template:
+    metadata:
+      labels:
+        app: gh-runner
+    spec:
+      containers:
+        - name: runner
+          image: ghcr.io/actions/actions-runner:latest
+          env:
+            - name: GITHUB_REPO
+              value: phuclearncode/ai-devsecops
+            - name: RUNNER_LABELS
+              value: k8s,lab
+            - name: GITHUB_PAT
+              valueFrom:
+                secretKeyRef:
+                  name: github-pat
+                  key: token
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              TOKEN=$(curl -fsSL -X POST \
+                -H "Authorization: Bearer ${GITHUB_PAT}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${GITHUB_REPO}/actions/runners/registration-token" \
+                | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p')
+              ./config.sh --unattended --ephemeral --replace \
+                --url "https://github.com/${GITHUB_REPO}" \
+                --token "${TOKEN}" \
+                --name "$(hostname)" \
+                --labels "${RUNNER_LABELS}"
+              exec ./run.sh
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi

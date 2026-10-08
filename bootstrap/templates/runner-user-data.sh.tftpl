@@ -1,0 +1,29 @@
+#!/bin/bash
+set -euo pipefail
+
+dnf install -y libicu jq tar gzip git unzip
+
+PAT=$(aws secretsmanager get-secret-value --region ${region} --secret-id ${secret_id} --query SecretString --output text)
+
+REG_TOKEN=$(curl -fsSL -X POST \
+  -H "Authorization: Bearer $PAT" \
+  -H "Accept: application/vnd.github+json" \
+  https://api.github.com/repos/${github_repo}/actions/runners/registration-token | jq -r .token)
+
+VERSION=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | jq -r .tag_name | sed 's/^v//')
+
+useradd -m runner || true
+mkdir -p /opt/actions-runner
+cd /opt/actions-runner
+curl -fsSL -o runner.tgz "https://github.com/actions/runner/releases/download/v$VERSION/actions-runner-linux-x64-$VERSION.tar.gz"
+tar xzf runner.tgz && rm runner.tgz
+chown -R runner:runner /opt/actions-runner
+
+sudo -u runner ./config.sh --unattended --replace \
+  --url "https://github.com/${github_repo}" \
+  --token "$REG_TOKEN" \
+  --name "$(hostname)" \
+  --labels "${labels}"
+
+./svc.sh install runner
+./svc.sh start
